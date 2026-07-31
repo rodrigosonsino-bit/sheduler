@@ -35,7 +35,7 @@ export function createMessageRoutes(dbPool: Pool, redisConnection: IORedis, tele
     router.use(createTrialCheckMiddleware(dbPool));
     
     const messageRepository = new PostgresMessageRepository(dbPool);
-    const messageScheduler = new BullMQMessageScheduler(redisConnection);
+    const messageScheduler = new BullMQMessageScheduler(redisConnection as any);
     
     // Injeta nos UseCases
     const scheduleMessageUseCase = new ScheduleMessageUseCase(messageRepository, messageScheduler);

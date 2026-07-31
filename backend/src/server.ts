@@ -123,7 +123,7 @@ async function bootstrap() {
         };
 
         if (process.env.DISABLE_WHATSAPP_BOOT !== 'true') {
-            await sessionManager.initializeAll(dbPool, messageHandler, statusHandler);
+            await sessionManager.initializeAll(dbPool as any, messageHandler, statusHandler);
         } else {
             logger.warn('⚠️  Inicialização do WhatsApp pulada via DISABLE_WHATSAPP_BOOT=true');
         }

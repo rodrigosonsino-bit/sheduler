@@ -90,7 +90,7 @@ export function createApp(
     // Google Calendar Integration
     const googleClient = new GoogleCalendarClient(dbPool);
     const messageRepository = new PostgresMessageRepository(dbPool);
-    const messageScheduler = new BullMQMessageScheduler(redisConnection);
+    const messageScheduler = new BullMQMessageScheduler(redisConnection as any);
     const googleSyncUseCase = new SyncGoogleCalendarUseCase(googleClient, messageRepository, dbPool, messageScheduler, sessionManager);
     const googleContactsClient = new GoogleContactsClient(dbPool, googleClient);
     const googleController = new GoogleCalendarController(googleClient, googleSyncUseCase, googleContactsClient);
