@@ -328,14 +328,18 @@ export class WhatsappClient {
             });
 
             this.sock.ev.on('messages.upsert', async (m: any) => {
-                const msg = m.messages[0];
-                if (!msg) return;
+                // Um único evento messages.upsert pode conter várias mensagens (ex: duas
+                // mensagens rápidas seguidas do mesmo contato). Processar apenas
+                // m.messages[0] descartava silenciosamente as demais.
+                for (const msg of (m.messages || [])) {
+                try {
+                if (!msg) continue;
 
                 const msgId = msg.key?.id;
                 if (msgId) {
                     if (this.processedMessageIds.has(msgId)) {
                         logger.debug(`⏭️ Ignorando evento de mensagem duplicada (id: ${msgId}).`);
-                        return;
+                        continue;
                     }
                     this.processedMessageIds.add(msgId);
                     setTimeout(() => {
@@ -368,7 +372,7 @@ export class WhatsappClient {
                             await this.disableAIForContact(from);
                         }
                     }
-                    return;
+                    continue;
                 }
 
                 const ACCEPT_WINDOW_MS = 10 * 60 * 1000;
@@ -402,7 +406,7 @@ export class WhatsappClient {
 
                     if (isReaction || isEmojiOnly || (!isMedia && !cleanText)) {
                         logger.debug(`⏭️ Ignorando mensagem de ${msg.pushName || 'Desconhecido'} (${from}) — emoji, reação ou vazia.`);
-                        return;
+                        continue;
                     }
 
                     const name = msg.pushName || 'Desconhecido';
@@ -450,7 +454,7 @@ export class WhatsappClient {
                                     } else {
                                         const remainingMinutes = Math.round((reenableMs - elapsedMs) / 60000);
                                         logger.info(`⏭️ Ignorando auto-resposta para ${name} (${from}) — cooldown ativo (${remainingMinutes} min restantes).`);
-                                        return;
+                                        continue;
                                     }
                                 }
 
@@ -558,6 +562,10 @@ export class WhatsappClient {
                             }
                         }
                     }
+                }
+                } catch (perMsgErr) {
+                    logger.error({ perMsgErr }, 'Erro ao processar uma mensagem individual do lote messages.upsert.');
+                }
                 }
             });
 
