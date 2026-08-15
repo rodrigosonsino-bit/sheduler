@@ -309,7 +309,31 @@ export class WhatsappClient {
             // "sent" no banco só reflete que o WhatsApp aceitou a mensagem no servidor — não
             // que ela chegou ao aparelho do destinatário.
             this.sock.ev.on('messages.update', async (updates: any[]) => {
-                logger.info({ tenantId: this.tenantId, updates: JSON.stringify(updates) }, '🔔 [DIAG] messages.update recebido');
+                // [FASE 1 — investigação de sessão Signal travada, ver PLANO_AUDITORIA_TEMP.md]
+                // Log sanitizado: só metadados estruturais (ids, flags, nomes de campo),
+                // NUNCA texto/mídia/ciphertext. Envolvido em try/catch para nunca derrubar
+                // o handler real de status logo abaixo. Sempre em INFO (explícito, não
+                // depende de threshold de log level).
+                try {
+                    for (const { key, update } of updates) {
+                        logger.info({
+                            tenantId: this.tenantId,
+                            keyId: key?.id,
+                            remoteJid: key?.remoteJid,
+                            remoteJidAlt: key?.remoteJidAlt,
+                            participant: key?.participant,
+                            fromMe: key?.fromMe,
+                            status: update?.status,
+                            messageStubType: update?.messageStubType,
+                            hasPollUpdates: Array.isArray(update?.pollUpdates) && update.pollUpdates.length > 0,
+                            hasMessageField: update?.message !== undefined,
+                            updateFieldNames: update ? Object.keys(update) : [],
+                        }, '🔬 [DIAG-FASE1] messages.update (sanitizado)');
+                    }
+                } catch (diagErr) {
+                    logger.warn({ diagErr }, '[DIAG-FASE1] Falha ao logar diagnóstico sanitizado de messages.update (não bloqueante).');
+                }
+
                 if (!this.onMessageStatusUpdate) return;
                 for (const { key, update } of updates) {
                     if (!key?.fromMe || !key?.id || update?.status === undefined) continue;
@@ -334,6 +358,28 @@ export class WhatsappClient {
                 for (const msg of (m.messages || [])) {
                 try {
                 if (!msg) continue;
+
+                // [FASE 1 — investigação de sessão Signal travada, ver PLANO_AUDITORIA_TEMP.md]
+                // Atrás de flag (default desligada) porque roda pra TODA mensagem, não só
+                // as aceitas — volume maior que o diagnóstico de messages.update acima.
+                // Log sanitizado: só nomes de campos presentes no conteúdo, nunca o valor.
+                if (process.env.WHATSAPP_DIAG_SESSION_ISSUE === 'true') {
+                    try {
+                        logger.info({
+                            tenantId: this.tenantId,
+                            keyId: msg.key?.id,
+                            remoteJid: msg.key?.remoteJid,
+                            remoteJidAlt: (msg.key as any)?.remoteJidAlt,
+                            participant: msg.key?.participant,
+                            fromMe: msg.key?.fromMe,
+                            upsertType: m.type,
+                            messageTimestamp: msg.messageTimestamp,
+                            contentFieldNames: msg.message ? Object.keys(msg.message) : [],
+                        }, '🔬 [DIAG-FASE1] messages.upsert (sanitizado)');
+                    } catch (diagErr) {
+                        logger.warn({ diagErr }, '[DIAG-FASE1] Falha ao logar diagnóstico sanitizado de messages.upsert (não bloqueante).');
+                    }
+                }
 
                 const msgId = msg.key?.id;
                 if (msgId) {
