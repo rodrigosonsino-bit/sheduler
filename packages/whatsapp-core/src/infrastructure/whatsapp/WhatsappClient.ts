@@ -49,6 +49,26 @@ export class WhatsappClient {
     // quando o destinatário pede retry por falha de descriptografia (ver getMessage abaixo).
     private sentMessageStore: Map<string, any> = new Map();
     private processedMessageIds: Set<string> = new Set();
+    // [FASE 2 — detecção de sessão Signal possivelmente travada, ver PLANO_AUDITORIA_TEMP.md]
+    // usableContentSeen: message id -> timestamp em que o conteúdo foi reconhecido como
+    // decodificado com sucesso (passou de ephemeral/view-once, tipo reconhecido, não é
+    // reação/emoji/vazio). É o sinal real de "Signal descriptografou certo" — distinto de
+    // processedMessageIds, que só significa "apareceu em algum messages.upsert".
+    private usableContentSeen: Map<string, number> = new Map();
+    // lastUsableContentAt: JID do contato -> timestamp da última mensagem dele com conteúdo
+    // decodificado. Usado para re-validar um candidato a travado no momento do disparo.
+    private lastUsableContentAt: Map<string, number> = new Map();
+    // stuckSessionCandidates: JID do contato -> timer pendente de aviso ao admin.
+    private stuckSessionCandidates: Map<string, { timer: NodeJS.Timeout; createdAt: number }> = new Map();
+    // lastStuckAlertAt: JID do contato -> timestamp do último aviso ao admin (cooldown).
+    // NOTA: estado em memória, não persistido. Isso é aceitável porque o
+    // acquireTenantSocketLock (WhatsappSessionManager) já garante que só UMA instância por
+    // tenant mantém o socket ativo e, portanto, os listeners que alimentam este estado — não
+    // há risco de duas instâncias emitirem avisos duplicados ao mesmo tempo. Um restart do
+    // processo zera o cooldown e os candidatos pendentes: na pior hipótese, um aviso pode se
+    // repetir antes das 2h padrão logo após um redeploy, o que é aceitável para um alerta
+    // informativo e reversível (não é uma escrita destrutiva).
+    private lastStuckAlertAt: Map<string, number> = new Map();
     private messageBuffers: Map<string, {
         timer: NodeJS.Timeout;
         messages: string[];
@@ -329,6 +349,16 @@ export class WhatsappClient {
                             hasMessageField: update?.message !== undefined,
                             updateFieldNames: update ? Object.keys(update) : [],
                         }, '🔬 [DIAG-FASE1] messages.update (sanitizado)');
+
+                        // [FASE 2] Avalia se este update é candidato a "sessão possivelmente
+                        // travada". Isolado em try/catch próprio para uma falha aqui nunca
+                        // impedir o log diagnóstico dos demais itens do lote nem o handler de
+                        // status logo abaixo.
+                        try {
+                            this.maybeFlagStuckSession(key, update);
+                        } catch (stuckErr) {
+                            logger.warn({ stuckErr }, '[FASE2] Erro ao avaliar candidato a sessão travada (não bloqueante).');
+                        }
                     }
                 } catch (diagErr) {
                     logger.warn({ diagErr }, '[DIAG-FASE1] Falha ao logar diagnóstico sanitizado de messages.update (não bloqueante).');
@@ -453,6 +483,20 @@ export class WhatsappClient {
                     if (isReaction || isEmojiOnly || (!isMedia && !cleanText)) {
                         logger.debug(`⏭️ Ignorando mensagem de ${msg.pushName || 'Desconhecido'} (${from}) — emoji, reação ou vazia.`);
                         continue;
+                    }
+
+                    // [FASE 2] A partir daqui o conteúdo foi reconhecido com sucesso — ou seja,
+                    // o Signal descriptografou certo. Registra o sinal de saúde e cancela
+                    // qualquer suspeita de sessão travada pendente para este contato.
+                    if (msgId) {
+                        this.usableContentSeen.set(msgId, Date.now());
+                        setTimeout(() => { this.usableContentSeen.delete(msgId); }, 20 * 60 * 1000);
+                    }
+                    this.lastUsableContentAt.set(from, Date.now());
+                    const pendingCandidate = this.stuckSessionCandidates.get(from);
+                    if (pendingCandidate) {
+                        clearTimeout(pendingCandidate.timer);
+                        this.stuckSessionCandidates.delete(from);
                     }
 
                     const name = msg.pushName || 'Desconhecido';
@@ -857,6 +901,94 @@ export class WhatsappClient {
         }
     }
 
+    /**
+     * [FASE 2 — detecção de sessão Signal possivelmente travada, ver PLANO_AUDITORIA_TEMP.md]
+     * Avalia um update de messages.update como candidato a "sessão possivelmente travada"
+     * para o contato. Só considera updates de mensagens RECEBIDAS (fromMe: false) que nunca
+     * passaram por conteúdo reconhecido (usableContentSeen) e que não carregam nada além de
+     * status/messageTimestamp — edição, enquete, stub de protocolo e histórico são excluídos
+     * deliberadamente, porque não indicam falha de descriptografia.
+     *
+     * Limitação conhecida (não resolvida por este mecanismo): nem todo caso de sessão
+     * travada gera um evento observável — já reproduzimos em produção um caso em que
+     * nenhum messages.update chegou antes do contato reenviar manualmente e a sessão se
+     * autorrecuperar sozinha. Este mecanismo só detecta os casos em que a mensagem chega
+     * ao socket mas nunca é decodificada, não os casos totalmente invisíveis.
+     */
+    private maybeFlagStuckSession(key: any, update: any): void {
+        if (!key?.id || !key?.remoteJid) return;
+        if (key.fromMe !== false) return; // só nos interessam mensagens RECEBIDAS
+
+        const jid: string = key.remoteJid;
+        if (jid.endsWith('@g.us') || jid.endsWith('@broadcast') || jid.endsWith('@newsletter') || jid.endsWith('@status')) return;
+
+        // Só updates "simples" de status — exclui edição, enquete, stub de protocolo,
+        // histórico ou qualquer outro tipo de messages.update que não seja um recibo.
+        if (update?.status === undefined) return;
+        if (update?.message !== undefined) return;
+        if (update?.messageStubType !== undefined) return;
+        if (Array.isArray(update?.pollUpdates) && update.pollUpdates.length > 0) return;
+
+        // Se esse id específico já foi visto como conteúdo decodificado, é um recibo
+        // normal de uma mensagem que já processamos com sucesso — não é candidato.
+        if (this.usableContentSeen.has(key.id)) return;
+
+        const adminNumber = process.env.ADMIN_WHATSAPP_NUMBER;
+        if (!adminNumber) return; // sem admin configurado, não há para quem avisar
+        const adminJidCandidate = adminNumber.includes('@') ? adminNumber : `${adminNumber}@s.whatsapp.net`;
+        if (jid === adminJidCandidate) return; // nunca monitorar o próprio admin
+
+        // Já existe um candidato/timer pendente para este contato — não duplicar.
+        if (this.stuckSessionCandidates.has(jid)) return;
+
+        const windowMinutes = parseInt(process.env.WHATSAPP_STUCK_SESSION_ALERT_MINUTES || '15', 10);
+        const createdAt = Date.now();
+        const timer = setTimeout(() => {
+            this.stuckSessionCandidates.delete(jid);
+            // Revalida no momento do disparo: se chegou conteúdo utilizável dele DEPOIS
+            // que este candidato foi criado, a sessão já está saudável — não alertar.
+            const lastGood = this.lastUsableContentAt.get(jid) || 0;
+            if (lastGood > createdAt) {
+                logger.debug({ jid }, '[FASE2] Candidato a sessão travada cancelado — mensagem posterior foi decodificada com sucesso.');
+                return;
+            }
+            const cooldownMs = parseInt(process.env.WHATSAPP_STUCK_SESSION_COOLDOWN_MINUTES || '120', 10) * 60 * 1000;
+            const lastAlert = this.lastStuckAlertAt.get(jid) || 0;
+            if (Date.now() - lastAlert < cooldownMs) {
+                logger.debug({ jid }, '[FASE2] Candidato a sessão travada confirmado, mas dentro do cooldown de aviso — não reenviando.');
+                return;
+            }
+            this.lastStuckAlertAt.set(jid, Date.now());
+            const contactName = this.contactsCache.get(jid) || 'um contato';
+            void this.notifyOwnerTechnicalIssue(contactName, jid, windowMinutes);
+        }, windowMinutes * 60 * 1000);
+
+        this.stuckSessionCandidates.set(jid, { timer, createdAt });
+    }
+
+    /**
+     * [FASE 2] Avisa o admin sobre uma possível falha técnica de entrega/decodificação com
+     * um contato específico — SEM apagar ou alterar nenhuma sessão automaticamente. Mensagem
+     * propositalmente cautelosa ("possível falha"), diferente de notifyHumanHandoff (que
+     * afirma que a IA foi pausada — não é o caso aqui, a detecção é só técnica).
+     */
+    public async notifyOwnerTechnicalIssue(contactName: string, contactJid: string, windowMinutes: number): Promise<void> {
+        try {
+            const adminNumber = process.env.ADMIN_WHATSAPP_NUMBER;
+            if (!adminNumber) {
+                logger.error('[FASE2] ADMIN_WHATSAPP_NUMBER não configurado — não foi possível notificar sobre possível sessão travada.');
+                return;
+            }
+            const adminJid = await this.resolveJid(adminNumber);
+            const displayJid = contactJid.replace('@lid', '').replace('@s.whatsapp.net', '');
+            const notifyMsg = `⚠️ *Sarah Assistente Virtual — Aviso Técnico*\n\nPossível falha técnica de entrega com *${contactName}* (${displayJid}): mensagens dele(a) podem não estar chegando corretamente há uns ${windowMinutes} min. É uma limitação conhecida do WhatsApp (não do atendimento). Se possível, peça para ele(a) reenviar a última mensagem.`;
+            await this.sendMessage(adminJid, notifyMsg);
+            logger.info({ contactJid }, '[FASE2] Aviso de possível sessão travada enviado ao admin.');
+        } catch (err) {
+            logger.error({ err, contactJid }, '[FASE2] Falha ao notificar admin sobre possível sessão travada.');
+        }
+    }
+
     private resetWatchdog() {
         this.clearWatchdog();
         this.connectionTimeoutTimer = setTimeout(() => {
@@ -880,6 +1012,13 @@ export class WhatsappClient {
      * as chaves Signal novas no banco — causa direta das mensagens "Aguardando mensagem".
      */
     private destroySocket(): void {
+        // [FASE 2] Limpa timers pendentes de candidatos a sessão travada — evita vazamento
+        // de timers e falsos avisos baseados em estado de uma conexão que já não existe mais.
+        for (const { timer } of this.stuckSessionCandidates.values()) {
+            clearTimeout(timer);
+        }
+        this.stuckSessionCandidates.clear();
+
         if (!this.sock) return;
         try {
             this.sock.ev.removeAllListeners('connection.update');
