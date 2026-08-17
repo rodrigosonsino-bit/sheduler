@@ -8,6 +8,20 @@ import { SarahContactsModal } from './SarahContactsModal';
 // Segunda through Domingo regardless of how the underlying object was built.
 const DAY_ORDER = ['segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado', 'domingo'];
 
+const DAY_LABEL_MAP: Record<string, string> = {
+  segunda: 'Segunda',
+  terca: 'Terça',
+  quarta: 'Quarta',
+  quinta: 'Quinta',
+  sexta: 'Sexta',
+  sabado: 'Sábado',
+  domingo: 'Domingo'
+};
+
+const TIME_SLOTS = ['08:00', '09:00', '10:00', '11:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00', '19:00', '20:00'];
+
+const HOUR_FORMAT_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 interface AISettingsModalProps {
   visible: boolean;
   onClose: () => void;
@@ -39,6 +53,8 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
   const [localWeeklyReportTime, setLocalWeeklyReportTime] = useState(aiSettings.weeklyReportTime);
   const [saving, setSaving] = useState(false);
   const [showContactsBlockModal, setShowContactsBlockModal] = useState(false);
+  const [customHourInput, setCustomHourInput] = useState<Record<string, string>>({});
+  const [customHourError, setCustomHourError] = useState<Record<string, boolean>>({});
 
   // Sync draft state with hook state only on the visible=false->true transition.
   // useAISettings() returns a brand-new object on every DashboardScreen render, so
@@ -66,6 +82,23 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
         : [...slots, hour].sort();
       return { ...current, [day]: newSlots };
     });
+  };
+
+  // Idempotent add for the custom-time input below — unlike handleToggleHourSlot,
+  // confirming a time that's already selected must not remove it.
+  const handleAddCustomHourSlot = (day: string) => {
+    const raw = (customHourInput[day] || '').trim();
+    if (!HOUR_FORMAT_REGEX.test(raw)) {
+      setCustomHourError(current => ({ ...current, [day]: true }));
+      return;
+    }
+    setLocalOfficeHours(current => {
+      const slots = current[day] || [];
+      if (slots.includes(raw)) return current;
+      return { ...current, [day]: [...slots, raw].sort() };
+    });
+    setCustomHourInput(current => ({ ...current, [day]: '' }));
+    setCustomHourError(current => ({ ...current, [day]: false }));
   };
 
   const handleSave = async () => {
@@ -126,24 +159,14 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
             </Text>
 
             {DAY_ORDER.map(day => {
-              const dayLabelMap: Record<string, string> = {
-                segunda: 'Segunda',
-                terca: 'Terça',
-                quarta: 'Quarta',
-                quinta: 'Quinta',
-                sexta: 'Sexta',
-                sabado: 'Sábado',
-                domingo: 'Domingo'
-              };
-
-              const timeSlots = ['08:00', '09:00', '10:00', '11:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00'];
               const activeHours = localOfficeHours[day] || [];
+              const allSlotsForDay = Array.from(new Set([...TIME_SLOTS, ...activeHours])).sort();
 
               return (
                 <View key={day} style={styles.gridDayRow}>
-                  <Text style={styles.gridDayLabel}>{dayLabelMap[day] || day}</Text>
+                  <Text style={styles.gridDayLabel}>{DAY_LABEL_MAP[day] || day}</Text>
                   <View style={styles.gridHoursWrap}>
-                    {timeSlots.map(hour => {
+                    {allSlotsForDay.map(hour => {
                       const isSelected = activeHours.includes(hour);
                       return (
                         <TouchableOpacity
@@ -159,6 +182,33 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
                         </TouchableOpacity>
                       );
                     })}
+                  </View>
+                  <View style={styles.customHourRow}>
+                    <TextInput
+                      style={[styles.customHourInput, customHourError[day] && styles.customHourInputError]}
+                      placeholder="hh:mm"
+                      maxLength={5}
+                      inputMode="numeric"
+                      autoCorrect={false}
+                      accessibilityLabel={`Horário customizado para ${DAY_LABEL_MAP[day] || day}`}
+                      value={customHourInput[day] || ''}
+                      onChangeText={(text) => {
+                        setCustomHourInput(current => ({ ...current, [day]: text }));
+                        if (customHourError[day]) setCustomHourError(current => ({ ...current, [day]: false }));
+                      }}
+                      onSubmitEditing={() => handleAddCustomHourSlot(day)}
+                    />
+                    <TouchableOpacity
+                      style={styles.customHourAddBtn}
+                      onPress={() => handleAddCustomHourSlot(day)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Adicionar horário customizado para ${DAY_LABEL_MAP[day] || day}`}
+                    >
+                      <Text style={styles.customHourAddBtnText}>+</Text>
+                    </TouchableOpacity>
+                    {customHourError[day] && (
+                      <Text style={styles.customHourErrorText}>Formato inválido, use hh:mm</Text>
+                    )}
                   </View>
                 </View>
               );
@@ -300,6 +350,45 @@ const styles = StyleSheet.create({
   },
   gridHourTextActive: {
     color: '#4F46E5',
+  },
+  customHourRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    marginTop: 6,
+  },
+  customHourInput: {
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    fontSize: 12,
+    color: '#0F172A',
+    backgroundColor: '#F8FAFC',
+    width: 64,
+  },
+  customHourInputError: {
+    borderColor: '#DC2626',
+  },
+  customHourAddBtn: {
+    marginLeft: 6,
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    backgroundColor: '#E0E7FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  customHourAddBtnText: {
+    color: '#4F46E5',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  customHourErrorText: {
+    fontSize: 11,
+    color: '#DC2626',
+    marginLeft: 8,
   },
   button: {
     borderRadius: 10,
