@@ -35,7 +35,11 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
   const [saving, setSaving] = useState(false);
   const [showContactsBlockModal, setShowContactsBlockModal] = useState(false);
 
-  // Sync draft state with hook state when modal opens
+  // Sync draft state with hook state only on the visible=false->true transition.
+  // useAISettings() returns a brand-new object on every DashboardScreen render, so
+  // depending on `aiSettings` here (instead of just `visible`) re-ran this effect on
+  // every parent re-render while the modal was open, silently reverting any edit the
+  // user had just made (looked like "can't select more than one time slot").
   useEffect(() => {
     if (visible) {
       setLocalEnabled(aiSettings.enabled);
@@ -45,19 +49,17 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
       setLocalWeeklyReportDay(aiSettings.weeklyReportDay);
       setLocalWeeklyReportTime(aiSettings.weeklyReportTime);
     }
-  }, [visible, aiSettings]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: only resync on the
+    // visible transition, not on every aiSettings identity change while the modal stays open.
+  }, [visible]);
 
   const handleToggleHourSlot = (day: string, hour: string) => {
-    const slots = localOfficeHours[day] || [];
-    let newSlots: string[];
-    if (slots.includes(hour)) {
-      newSlots = slots.filter(h => h !== hour);
-    } else {
-      newSlots = [...slots, hour].sort();
-    }
-    setLocalOfficeHours({
-      ...localOfficeHours,
-      [day]: newSlots
+    setLocalOfficeHours(current => {
+      const slots = current[day] || [];
+      const newSlots = slots.includes(hour)
+        ? slots.filter(h => h !== hour)
+        : [...slots, hour].sort();
+      return { ...current, [day]: newSlots };
     });
   };
 
@@ -134,10 +136,8 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
 
               return (
                 <View key={day} style={styles.gridDayRow}>
-                  <View style={styles.gridDayHeader}>
-                    <Text style={styles.gridDayLabel}>{dayLabelMap[day] || day}</Text>
-                  </View>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.gridHoursScroll} nestedScrollEnabled={true}>
+                  <Text style={styles.gridDayLabel}>{dayLabelMap[day] || day}</Text>
+                  <View style={styles.gridHoursWrap}>
                     {timeSlots.map(hour => {
                       const isSelected = activeHours.includes(hour);
                       return (
@@ -145,6 +145,8 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
                           key={hour}
                           style={[styles.gridHourBtn, isSelected && styles.gridHourBtnActive]}
                           onPress={() => handleToggleHourSlot(day, hour)}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: isSelected }}
                         >
                           <Text style={[styles.gridHourText, isSelected && styles.gridHourTextActive]}>
                             {hour}
@@ -152,7 +154,7 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
                         </TouchableOpacity>
                       );
                     })}
-                  </ScrollView>
+                  </View>
                 </View>
               );
             })}
@@ -260,23 +262,20 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   gridDayRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
     marginBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#F1F5F9',
     paddingBottom: 8,
   },
-  gridDayHeader: {
-    width: 70,
-  },
   gridDayLabel: {
     fontSize: 13,
     fontWeight: '700',
     color: '#334155',
+    marginBottom: 6,
   },
-  gridHoursScroll: {
-    flex: 1,
+  gridHoursWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
   },
   gridHourBtn: {
     paddingHorizontal: 10,
@@ -284,6 +283,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: '#F1F5F9',
     marginRight: 6,
+    marginBottom: 6,
   },
   gridHourBtnActive: {
     backgroundColor: '#E0E7FF',
