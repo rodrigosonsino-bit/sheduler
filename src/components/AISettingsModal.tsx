@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, Modal, TouchableOpacity, ScrollView, TextInput, ActivityIndicator, Alert, StyleSheet } from 'react-native';
 import { OfficeHours } from '../services/api';
+import { SarahContactsModal } from './SarahContactsModal';
 
 interface AISettingsModalProps {
   visible: boolean;
@@ -32,6 +33,7 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
   const [localWeeklyReportDay, setLocalWeeklyReportDay] = useState(aiSettings.weeklyReportDay);
   const [localWeeklyReportTime, setLocalWeeklyReportTime] = useState(aiSettings.weeklyReportTime);
   const [saving, setSaving] = useState(false);
+  const [showContactsBlockModal, setShowContactsBlockModal] = useState(false);
 
   // Sync draft state with hook state when modal opens
   useEffect(() => {
@@ -154,6 +156,17 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
                 </View>
               );
             })}
+
+            <Text style={[styles.sectionSubtitle, { marginTop: 20 }]}>🔇 Contatos silenciados</Text>
+            <Text style={styles.gridInstruction}>
+              Escolha contatos específicos (ex: familiares) que a Sarah nunca deve responder automaticamente.
+            </Text>
+            <TouchableOpacity
+              style={[styles.button, styles.cancelButton, { marginTop: 8 }]}
+              onPress={() => setShowContactsBlockModal(true)}
+            >
+              <Text style={styles.buttonText}>Gerenciar contatos silenciados</Text>
+            </TouchableOpacity>
           </ScrollView>
 
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 20 }}>
@@ -177,6 +190,11 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
           </View>
         </View>
       </View>
+
+      <SarahContactsModal
+        visible={showContactsBlockModal}
+        onClose={() => setShowContactsBlockModal(false)}
+      />
     </Modal>
   );
 }

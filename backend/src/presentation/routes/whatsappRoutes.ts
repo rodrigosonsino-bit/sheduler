@@ -20,6 +20,7 @@ export function createWhatsappRoutes(sessionManager: WhatsappSessionManager, dbP
     router.get('/whatsapp/diagnostics', controller.getDiagnostics);
     router.get('/whatsapp/groups', controller.getGroups);
     router.get('/whatsapp/contacts', controller.getContacts);
+    router.patch('/whatsapp/contacts/:id/ai-block', controller.setContactAiBlock);
     router.post('/whatsapp/pairing-code', controller.getPairingCode);
 
     return router;

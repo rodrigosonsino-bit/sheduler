@@ -522,10 +522,16 @@ export class WhatsappClient {
                         } else {
                             try {
                                 const contactRes = await this.dbPool.query(
-                                    'SELECT ai_disabled, ai_disabled_at FROM whatsapp_contacts WHERE tenant_id = $1::uuid AND id = $2;',
+                                    'SELECT ai_disabled, ai_disabled_at, ai_permanently_disabled FROM whatsapp_contacts WHERE tenant_id = $1::uuid AND id = $2;',
                                     [this.tenantId, from]
                                 );
                                 const row = contactRes.rows[0];
+
+                                if (row?.ai_permanently_disabled === true) {
+                                    logger.info(`🔇 Ignorando auto-resposta para ${name} (${from}) — bloqueio permanente ativado pelo usuário.`);
+                                    continue;
+                                }
+
                                 let isAiDisabled = row?.ai_disabled === true;
                                 const aiDisabledAt = row?.ai_disabled_at;
 
@@ -605,6 +611,14 @@ export class WhatsappClient {
                                         const concatenatedText = finalBuffer.messages.join(' ');
                                         logger.info(`⏳ Debounce expirado para ${finalBuffer.name} (${from}). Processando mensagens acumuladas:\n${concatenatedText}`);
 
+                                        // Rechecagem: o usuário pode ter ativado o bloqueio permanente depois
+                                        // que a mensagem já tinha passado pela checagem de entrada mas antes
+                                        // do debounce de 2.5s expirar.
+                                        if (await this.isAIPermanentlyBlocked(from)) {
+                                            logger.info(`🔇 Debounce expirado, mas bloqueio permanente foi ativado nesse meio-tempo para ${finalBuffer.name} (${from}). Descartando resposta.`);
+                                            return;
+                                        }
+
                                         try {
                                             await this.sock.sendPresenceUpdate('composing', from);
                                         } catch (presErr) {
@@ -632,8 +646,15 @@ export class WhatsappClient {
                                                     await this.notifyHumanHandoff(finalBuffer.name, from, 'O paciente encerrou o fluxo automatizado ou solicitou ajuda.');
                                                 }
 
-                                                logger.info(`🤖 Enviando auto-resposta via WhatsApp para ${finalBuffer.name}: "${finalReply}"`);
-                                                await this.sendMessage(from, finalReply);
+                                                // Terceira e última rechecagem, imediatamente antes de enviar —
+                                                // cobre o caso do bloqueio ter sido ativado durante a geração
+                                                // da resposta pelo Gemini (chamada acima pode levar segundos).
+                                                if (await this.isAIPermanentlyBlocked(from)) {
+                                                    logger.info(`🔇 Resposta gerada, mas bloqueio permanente foi ativado durante o processamento para ${finalBuffer.name} (${from}). Descartando envio.`);
+                                                } else {
+                                                    logger.info(`🤖 Enviando auto-resposta via WhatsApp para ${finalBuffer.name}: "${finalReply}"`);
+                                                    await this.sendMessage(from, finalReply);
+                                                }
                                             }
                                         } finally {
                                             try {
@@ -843,6 +864,24 @@ export class WhatsappClient {
             );
         } catch (error) {
             logger.error({ err: error, id }, 'Erro ao desativar IA para o contato no banco.');
+        }
+    }
+
+    // Checagem de bloqueio permanente (ligado manualmente pelo usuario no app,
+    // independente do cooldown temporario de ai_disabled). Reconsultada em
+    // multiplos pontos do fluxo de debounce porque o toggle pode ser ativado
+    // entre a chegada da mensagem e o envio da resposta gerada pela IA.
+    private async isAIPermanentlyBlocked(id: string): Promise<boolean> {
+        if (!this.dbPool) return false;
+        try {
+            const res = await this.dbPool.query(
+                'SELECT ai_permanently_disabled FROM whatsapp_contacts WHERE tenant_id = $1::uuid AND id = $2;',
+                [this.tenantId, id]
+            );
+            return res.rows[0]?.ai_permanently_disabled === true;
+        } catch (error) {
+            logger.error({ err: error, id }, 'Erro ao checar bloqueio permanente de IA para o contato.');
+            return false;
         }
     }
 
