@@ -3,6 +3,11 @@ import { View, Text, Modal, TouchableOpacity, ScrollView, TextInput, ActivityInd
 import { OfficeHours } from '../services/api';
 import { SarahContactsModal } from './SarahContactsModal';
 
+// Object.keys(localOfficeHours) follows insertion order of whatever was last saved,
+// not necessarily Monday->Sunday — this fixed order keeps the grid always rendering
+// Segunda through Domingo regardless of how the underlying object was built.
+const DAY_ORDER = ['segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado', 'domingo'];
+
 interface AISettingsModalProps {
   visible: boolean;
   onClose: () => void;
@@ -120,7 +125,7 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
               Selecione os dias e horários em que a Sarah poderá agendar sessões (toque para ativar/desativar):
             </Text>
 
-            {Object.keys(localOfficeHours).map(day => {
+            {DAY_ORDER.map(day => {
               const dayLabelMap: Record<string, string> = {
                 segunda: 'Segunda',
                 terca: 'Terça',
@@ -130,7 +135,7 @@ export function AISettingsModal({ visible, onClose, aiSettings }: AISettingsModa
                 sabado: 'Sábado',
                 domingo: 'Domingo'
               };
-              
+
               const timeSlots = ['08:00', '09:00', '10:00', '11:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00'];
               const activeHours = localOfficeHours[day] || [];
 
