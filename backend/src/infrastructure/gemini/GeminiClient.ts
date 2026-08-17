@@ -423,7 +423,8 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (Retorne APENAS um JSON válido):
         calendarActive: boolean,
         formattedOfficeHours: string,
         conversationHistory: string,
-        instructions: string
+        instructions: string,
+        psicoAppBookingLink: string | null = null
     ): string {
         const aiName = process.env.SARAH_AI_NAME || 'Sarah';
         const now = new Date();
@@ -433,6 +434,11 @@ FORMATO DE RESPOSTA OBRIGATÓRIO (Retorne APENAS um JSON válido):
 Seu papel é interagir de forma acolhedora, inteligente, elegante, humana e pastoral com os contatos no WhatsApp.
 O tom de voz deve ser equilibrado: maduro, acolhedor, profissional e caloroso.
 
+${psicoAppBookingLink ? `
+---
+### 📅 AGENDAMENTO DE PSICOTERAPIA — VIA LINK EXTERNO (leia com atenção)
+Para ESTE contato, a agenda de Psicoterapia é gerenciada externamente pelo PsicoApp, não pela agenda do Scheduler. NÃO proponha, colete ou confirme data/hora nesta conversa. Quando o contato quiser agendar uma sessão de Psicoterapia, informe que o agendamento é feito direto por um link oficial e envie exatamente este link: ${psicoAppBookingLink}
+` : `
 ---
 ### 📅 HORÁRIOS LIVRES NA AGENDA
 - Integração da Agenda Google: ${calendarActive ? 'ATIVA' : 'DESATIVADA'}
@@ -451,6 +457,7 @@ ATENÇÃO: A agenda Google do Rodrigo está desconectada no momento.
 Estes são os horários regulares em que o Rodrigo realiza atendimentos. Você deve sugerir sessões EXCLUSIVAMENTE dentro destes dias da semana e horários específicos:
 ${formattedOfficeHours}
 As sessões duram sempre de 45 a 55 minutos.
+`}
 
 ---
 ### 👤 PERFIL DO RODRIGO SONSINO
@@ -491,13 +498,13 @@ As sessões duram sempre de 45 a 55 minutos.
 
 4. **Fluxo 2 — Psicoterapia**:
    - Opções: 1️⃣ Agendar uma sessão | 2️⃣ Receber informações | 3️⃣ Cancelar uma sessão | 4️⃣ Deixar uma mensagem.
-   - **Agendamento**: Colete de forma sutil (uma ou duas perguntas por vez) as informações:
-     * Nome completo, Cidade/Estado, Online ou Presencial, Primeira sessão ou retorno, Indicação, Melhores dias/períodos.
-     * Quando o paciente escolher um dia e horário exato e livre, você deve propor ou agendar.
+   - **Agendamento**:
+     ${psicoAppBookingLink ? `Quando o paciente quiser agendar, responda de forma acolhedora e envie o link de agendamento oficial (ver seção "AGENDAMENTO DE PSICOTERAPIA — VIA LINK EXTERNO" acima). NÃO colete data/hora exata nem tente propor ou confirmar horário nesta conversa, mesmo que o paciente informe um dia/horário específico — nesse caso, peça para ele escolher e confirmar diretamente pelo link.` : `Colete de forma sutil (uma ou duas perguntas por vez) as informações: Nome completo, Cidade/Estado, Online ou Presencial, Primeira sessão ou retorno, Indicação, Melhores dias/períodos. Quando o paciente escolher um dia e horário exato e livre, você deve propor ou agendar.`}
    - **Informações**: "O atendimento clínico com o Psicoterapeuta Rodrigo Sonsino é realizado por meio de sessões individuais (Online ou Presenciais), integrando de forma ética e segura a saúde emocional, o autoconhecimento e a espiritualidade cristã. Cada sessão tem duração média de 50 minutos."
-   - **Cancelamento**: Pergunte o dia e horário que deseja cancelar.
+   - **Cancelamento**: ${psicoAppBookingLink ? 'Informe que o cancelamento desta sessão será confirmado pelo Rodrigo em breve (o agendamento é feito pelo PsicoApp, não diretamente por aqui).' : 'Pergunte o dia e horário que deseja cancelar.'}
 
 5. **Confirmação Estrita de Ações (CRÍTICO)**:
+   - As instruções desta regra (propose_slots / create_event / confirmação de horário) valem SOMENTE quando a agenda usada é a do próprio Scheduler — ou seja, Conversa Pastoral, ou Psicoterapia quando NÃO houver um link de agendamento externo ativo (ver seção "AGENDAMENTO DE PSICOTERAPIA" acima). Quando esse link estiver ativo, ignore completamente as instruções abaixo de propor/confirmar/agendar horário — a única coisa a fazer é enviar o link.
    - **NUNCA** marque ou cancele uma consulta diretamente sem que o usuário confirme explicitamente.
    - Para propor horários, utilize a ação "propose_slots".
    - Quando o usuário disser que deseja marcar em um horário X, primeiro responda perguntando "Confirma o agendamento para [Data] às [Hora]?" e defina a ação no JSON como "create_event" com "requiresConfirmation: true".
@@ -771,6 +778,8 @@ Quintas-feiras - às 8h, às 9h, às 13h, às 14h`;
                 }
             }
 
+            const psicoAppBookingLink = this.getPsicoAppBookingLink(safeTenantId, context);
+
             const systemPrompt = this.buildSecretaryPrompt(
                 clientName,
                 context,
@@ -778,7 +787,8 @@ Quintas-feiras - às 8h, às 9h, às 13h, às 14h`;
                 calendarActive,
                 formattedOfficeHours,
                 conversationContext,
-                instructions
+                instructions,
+                psicoAppBookingLink
             );
 
             const apiKey = process.env.GEMINI_API_KEY || '';
@@ -927,6 +937,8 @@ Quintas-feiras - às 8h, às 9h, às 13h, às 14h`;
             context.conversation_stage = parsedResponse.conversationStage || context.conversation_stage;
             context.preferences = { ...context.preferences, ...parsedResponse.preferences };
 
+            await this.enforcePsicoAppSchedulingGate(contactJid, clientName, context, parsedResponse, safeTenantId);
+
             await this.executeSecretaryAction(contactJid, clientName, parsedResponse.action, context, clientMessage, safeTenantId);
 
             if (parsedResponse.requiresHuman === true) {
@@ -954,6 +966,70 @@ Quintas-feiras - às 8h, às 9h, às 13h, às 14h`;
             logger.error({ errMsg: error?.message, errStack: error?.stack, error }, 'Erro ao gerar auto-resposta com o Gemini');
             return `Olá ${clientName}! Obrigado pela mensagem. Rodrigo retornará assim que possível!`;
         }
+    }
+
+    // Integração de agendamento com o PsicoApp — restrita a UM tenant especifico
+    // (nao generalizada). Em vez de a Sarah coletar data/hora e criar o evento ela
+    // mesma (fluxo antigo, via Google Calendar do Scheduler), ela apenas encaminha o
+    // link publico de auto-agendamento do PsicoApp, que ja cuida de disponibilidade,
+    // conflito e sincronizacao com o Google Calendar do lado dele. Ver
+    // plano_sarah_link_psicoapp_v4.md (auditado pelo Codex) para o racional completo.
+    private getPsicoAppBookingLink(tenantId: string, context: any): string | null {
+        const link = process.env.PSICOAPP_SELF_BOOK_LINK?.trim();
+        const targetTenantId = process.env.PSICOAPP_INTEGRATION_TENANT_ID?.trim();
+
+        if (!!targetTenantId !== !!link) {
+            // Configuração inconsistente (só uma das duas env vars setada) — nunca deve
+            // passar despercebido, mesmo que o fallback (comportamento antigo) não quebre nada.
+            logger.error('[PsicoApp Integration] PSICOAPP_INTEGRATION_TENANT_ID e PSICOAPP_SELF_BOOK_LINK devem estar ambas setadas ou ambas ausentes. Configuração inconsistente detectada.');
+        }
+
+        if (!targetTenantId || !link) return null;
+        if (tenantId !== targetTenantId) return null;
+        if (context?.preferences?.sessionType !== 'psicoterapia') return null;
+        return link;
+    }
+
+    // Trava server-side: bloqueia qualquer create_event/propose_slots/cancel_event que o
+    // Gemini eventualmente devolva para o fluxo integrado com o PsicoApp, e SOBRESCREVE o
+    // replyText com uma resposta determinística — não depende do modelo seguir a instrução
+    // do prompt corretamente (o prompt sozinho não é barreira de segurança).
+    private async enforcePsicoAppSchedulingGate(
+        contactJid: string,
+        clientName: string,
+        context: any,
+        parsedResponse: any,
+        tenantId: string
+    ): Promise<void> {
+        const psicoAppBookingLink = this.getPsicoAppBookingLink(tenantId, context);
+        if (!psicoAppBookingLink) return;
+
+        const footer = `\n\n*(Se preferir falar direto com o Rodrigo ou encerrar o autoatendimento, basta digitar 👍 ou 'falar com o Rodrigo' a qualquer momento!)*`;
+
+        if (context.pending_action && ['create_event', 'cancel_event', 'propose_slots'].includes(context.pending_action.type)) {
+            context.pending_action = null;
+        }
+
+        const originalActionType = parsedResponse.action?.type;
+
+        if (originalActionType === 'cancel_event') {
+            try {
+                const whatsappClient = await this.sessionManager.getSession(tenantId);
+                if (whatsappClient) {
+                    await whatsappClient.sendMessage(
+                        this.getAdminJid(),
+                        `📢 *Sarah Assistente Virtual*\nOlá Rodrigo!\n\n*${clientName}* (+${contactJid.split('@')[0]}) pediu para cancelar uma sessão de Psicoterapia. Como esse agendamento é feito pelo PsicoApp, confirme o cancelamento por lá.`
+                    );
+                }
+            } catch (notifyErr) {
+                logger.error({ notifyErr }, '[PsicoApp Integration] Erro ao notificar Rodrigo sobre pedido de cancelamento.');
+            }
+            parsedResponse.replyText = `Entendi! Vou avisar o Rodrigo sobre o seu pedido de cancelamento, e ele confirma com você em breve. 🙏😊${footer}`;
+        } else if (originalActionType === 'create_event' || originalActionType === 'propose_slots') {
+            parsedResponse.replyText = `Perfeito! Para agendar sua sessão de psicoterapia, é só escolher o melhor horário direto por aqui: ${psicoAppBookingLink}\n\nVocê vai ver os horários realmente disponíveis e confirmar na hora. 😊${footer}`;
+        }
+
+        parsedResponse.action = { type: 'none', params: {}, requiresConfirmation: false };
     }
 
     private async handleCancelAction(contactJid: string, clientName: string, actionInfo: string, tenantId: string) {
