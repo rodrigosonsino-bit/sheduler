@@ -134,10 +134,19 @@ export const getWhatsappGroups = async () => {
 export interface WhatsappContact {
     id: string;
     name: string;
+    aiPermanentlyDisabled?: boolean;
 }
 
 export const getWhatsappContacts = async () => {
     const response = await api.get<WhatsappContact[]>('/whatsapp/contacts');
+    return response.data;
+};
+
+export const setContactAiBlock = async (id: string, permanentlyDisabled: boolean) => {
+    const response = await api.patch<{ id: string; aiPermanentlyDisabled: boolean }>(
+        `/whatsapp/contacts/${encodeURIComponent(id)}/ai-block`,
+        { permanentlyDisabled }
+    );
     return response.data;
 };
 

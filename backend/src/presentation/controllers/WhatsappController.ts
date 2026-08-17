@@ -205,7 +205,8 @@ export class WhatsappController {
             // mesmo sem sessão ativa, então não exigimos conexão aqui.
             if (this.dbPool) {
                 const result = await this.dbPool.query(
-                    `SELECT id, COALESCE(NULLIF(alias_name, ''), NULLIF(google_name, ''), name) AS name
+                    `SELECT id, COALESCE(NULLIF(alias_name, ''), NULLIF(google_name, ''), name) AS name,
+                            ai_permanently_disabled AS "aiPermanentlyDisabled"
                      FROM whatsapp_contacts
                      WHERE tenant_id = $1::uuid
                      ORDER BY COALESCE(NULLIF(alias_name, ''), NULLIF(google_name, ''), name) ASC;`,
@@ -225,6 +226,51 @@ export class WhatsappController {
             res.json(contacts);
         } catch (error: any) {
             logger.error({ err: error, tenantId }, 'Erro ao buscar contatos do WhatsApp.');
+            res.status(500).json({ error: error.message });
+        }
+    };
+
+    setContactAiBlock = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+        const tenantId = req.tenantId;
+        if (!tenantId) {
+            res.status(401).json({ error: 'Não autorizado' });
+            return;
+        }
+
+        const { id } = req.params;
+        if (!id || typeof id !== 'string' || id.length === 0 || id.length > 255) {
+            res.status(400).json({ error: 'ID de contato inválido.' });
+            return;
+        }
+
+        const { permanentlyDisabled } = req.body;
+        if (typeof permanentlyDisabled !== 'boolean') {
+            res.status(400).json({ error: 'Campo permanentlyDisabled deve ser um booleano.' });
+            return;
+        }
+
+        if (!this.dbPool) {
+            res.status(503).json({ error: 'Banco de dados indisponível.' });
+            return;
+        }
+
+        try {
+            const result = await this.dbPool.query(
+                `UPDATE whatsapp_contacts
+                 SET ai_permanently_disabled = $3
+                 WHERE tenant_id = $1::uuid AND id = $2
+                 RETURNING id, ai_permanently_disabled AS "aiPermanentlyDisabled";`,
+                [tenantId, id, permanentlyDisabled]
+            );
+
+            if (result.rowCount === 0) {
+                res.status(404).json({ error: 'Contato não encontrado.' });
+                return;
+            }
+
+            res.json(result.rows[0]);
+        } catch (error: any) {
+            logger.error({ err: error, tenantId, id }, 'Erro ao atualizar bloqueio permanente de IA do contato.');
             res.status(500).json({ error: error.message });
         }
     };

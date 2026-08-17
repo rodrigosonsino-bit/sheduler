@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS whatsapp_contacts (
     id VARCHAR(255) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     ai_disabled BOOLEAN DEFAULT FALSE,
-    ai_disabled_at TIMESTAMP WITH TIME ZONE
+    ai_disabled_at TIMESTAMP WITH TIME ZONE,
+    ai_permanently_disabled BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS system_settings (
