@@ -17,6 +17,18 @@ const toLocalDatetimeInputValue = (d: Date): string => {
   return `${year}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
+/**
+ * Alert.alert não tem implementação real no react-native-web usado aqui — silenciosamente
+ * não mostra nada na build web. window.alert é o fallback correto pra esse ambiente.
+ */
+const showAlert = (title: string, message: string): void => {
+  if (Platform.OS === 'web' && typeof window !== 'undefined') {
+    window.alert(`${title}\n\n${message}`);
+  } else {
+    Alert.alert(title, message);
+  }
+};
+
 interface MessageSchedulerModalProps {
   visible: boolean;
   onClose: () => void;
@@ -144,7 +156,7 @@ export function MessageSchedulerModal({
   const handlePickImage = async () => {
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permissionResult.granted) {
-      Alert.alert('Permissão Negada', 'Precisamos de acesso à sua galeria para escolher uma imagem.');
+      showAlert('Permissão Negada', 'Precisamos de acesso à sua galeria para escolher uma imagem.');
       return;
     }
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -180,7 +192,7 @@ export function MessageSchedulerModal({
       setAiExplanation(res.explanation);
       setAiPrompt('');
     } catch (error) {
-      Alert.alert('Erro', 'Não foi possível contatar a secretária de IA.');
+      showAlert('Erro', 'Não foi possível contatar a secretária de IA.');
     } finally {
       setAiLoading(false);
     }
@@ -188,7 +200,7 @@ export function MessageSchedulerModal({
 
   const handleSave = async () => {
     if (!content.trim() || !recipient.trim()) {
-      Alert.alert('Atenção', 'Preencha todos os campos corretamente.');
+      showAlert('Atenção', 'Preencha todos os campos corretamente.');
       return;
     }
 
@@ -196,17 +208,17 @@ export function MessageSchedulerModal({
     const effectiveDate = Platform.OS === 'web' ? new Date(webDateStr) : date;
 
     if (!webDateStr && Platform.OS === 'web') {
-      Alert.alert('Atenção', 'Selecione a data e a hora de envio.');
+      showAlert('Atenção', 'Selecione a data e a hora de envio.');
       return;
     }
 
     if (isNaN(effectiveDate.getTime())) {
-      Alert.alert('Atenção', 'A data/hora de envio é inválida. Selecione uma data válida.');
+      showAlert('Atenção', 'A data/hora de envio é inválida. Selecione uma data válida.');
       return;
     }
 
     if (!editingMessage && effectiveDate <= new Date()) {
-      Alert.alert('Atenção', 'A data/hora de envio deve ser no futuro. Ajuste a data antes de agendar.');
+      showAlert('Atenção', 'A data/hora de envio deve ser no futuro. Ajuste a data antes de agendar.');
       return;
     }
 
@@ -244,15 +256,15 @@ export function MessageSchedulerModal({
           recurrence,
           imageBase64,
         });
-        Alert.alert('Sucesso', 'Mensagem atualizada com sucesso!');
+        showAlert('Sucesso', 'Mensagem atualizada com sucesso!');
       } else {
         await scheduleMessage(content, recipient, utcDateStr, platform, recurrence, imageBase64, recipientName.trim() || undefined);
-        Alert.alert('Sucesso', 'Mensagem agendada com sucesso!');
+        showAlert('Sucesso', 'Mensagem agendada com sucesso!');
       }
       onSaveSuccess();
       onClose();
     } catch (error: any) {
-      Alert.alert('Erro', error?.response?.data?.error || 'Erro ao processar a operação');
+      showAlert('Erro', error?.response?.data?.error || 'Erro ao processar a operação');
     } finally {
       setSubmitting(false);
     }
